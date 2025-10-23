@@ -6,11 +6,11 @@ import (
 	"nisansala/configs"
 	"nisansala/utils"
 
+	"nisansala/routes"
+
 	"github.com/gofiber/contrib/fibernewrelic"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
-
-	"nisansala/routes"
 )
 
 func main() {
@@ -22,13 +22,21 @@ func main() {
 	}
 	utils.SetLogLevel(0)
 	app := fiber.New()
-	app.Use(requestid.New())
 
 	// Setup New Relic using environment variables
 	newRelicApp := utils.SetupNewRelic(config)
 	if newRelicApp != nil {
-		app.Use(fibernewrelic.New(fibernewrelic.Config{Application: newRelicApp}))
+		app.Use(fibernewrelic.New(fibernewrelic.Config{
+			Application: newRelicApp,
+			Enabled:     true,
+		}))
 	}
+	app.Use(func(c *fiber.Ctx) error {
+		log.Printf("Incoming headers at entry: newrelic=%s, traceparent=%s, tracestate=%s",
+			c.Get("newrelic"), c.Get("traceparent"), c.Get("tracestate"))
+		return c.Next()
+	})
+	app.Use(requestid.New())
 
 	routes.SetupRoutes(app)
 

@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"nisansala/utils"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -54,7 +55,11 @@ func ComputeUntraced(c *fiber.Ctx) error {
 // request to the external API. The New Relic agent will automatically honor
 // distributed tracing headers sent by the caller.
 func ComputeTraced(c *fiber.Ctx) error {
-	requestID := c.Locals("requestid")
+	requestID := ""
+	if rid, ok := c.Locals("requestid").(string); ok {
+		requestID = rid
+	}
+
 	// Log incoming headers so we can verify header propagation from chamod
 	log.Printf("%v: ComputeTraced - start; headers: newrelic=%s traceparent=%s tracestate=%s X-Request-Id=%s",
 		requestID, c.Get("newrelic"), c.Get("traceparent"), c.Get("tracestate"), c.Get("X-Request-Id"))
@@ -64,7 +69,18 @@ func ComputeTraced(c *fiber.Ctx) error {
 	if txn == nil {
 		log.Printf("%v: no New Relic transaction found; this request will be recorded locally only", requestID)
 		return ComputeUntraced(c)
+	} else {
+		traceMetadata := txn.GetTraceMetadata()
+		traceID := traceMetadata.TraceID
+		spanID := traceMetadata.SpanID
+		sampled := txn.IsSampled()
+		utils.Logger.Debug(requestID, "Request TraceID: %s, SpanID: %s, Sampled: %v", traceID, spanID, sampled)
 	}
+
+	//log.Printf("Incoming headers: newrelic=%s traceparent=%s tracestate=%s",
+	//	c.Get("newrelic"), c.Get("traceparent"), c.Get("tracestate"))
+	utils.Logger.Debug(requestID, "Incoming request headers: %v", c.GetReqHeaders())
+	//utils.Logger.Debug(requestID, "Outgoing request headers: %v", req.Header)
 
 	// Start internal segment to measure local processing
 	internalStart := time.Now()
@@ -72,7 +88,7 @@ func ComputeTraced(c *fiber.Ctx) error {
 	// Simulate 2-3s processing
 	r := time.Duration(2000+rand.Intn(1000)) * time.Millisecond
 	time.Sleep(r)
-	internalSeg.End()
+	defer internalSeg.End()
 	internalDuration := time.Since(internalStart)
 
 	// Prepare external request with the same context so the agent can inject tracing headers
@@ -88,7 +104,7 @@ func ComputeTraced(c *fiber.Ctx) error {
 	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if externalSeg != nil {
-		externalSeg.End()
+		defer externalSeg.End()
 	}
 	if err != nil {
 		log.Printf("%v: error performing external call: %v", requestID, err)

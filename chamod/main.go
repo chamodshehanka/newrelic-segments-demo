@@ -21,15 +21,14 @@ func main() {
 	utils.SetLogLevel(0)
 
 	app := fiber.New()
-	app.Use(requestid.New())
-
 	newrelicApp := utils.SetupNewRelic(config)
 	if newrelicApp != nil {
 		app.Use(fibernewrelic.New(fibernewrelic.Config{
 			Application: newrelicApp,
+			Enabled:     true,
 		}))
-		//app.Use(middlewares.NewRelicMiddleware())
 	}
+	app.Use(requestid.New())
 
 	routes.SetupRoutes(app)
 	log.Fatal(app.Listen(fmt.Sprintf(":%d", port)))
