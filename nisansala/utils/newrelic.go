@@ -11,7 +11,7 @@ func SetupNewRelic(config *configs.Config) *newrelic.Application {
 	Logger.Info("", "Setting up newrelic client")
 	if config.NewRelicConfig.Enabled {
 		newrelicApp, err := newrelic.NewApplication(
-			newrelic.ConfigAppName(config.NewRelicConfig.AppName),
+			newrelic.ConfigAppName("nisansala-service-dev"),
 			newrelic.ConfigLicense(config.NewRelicConfig.LicenseKey),
 			newrelic.ConfigEnabled(true),
 			newrelic.ConfigDistributedTracerEnabled(true),

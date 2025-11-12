@@ -60,22 +60,23 @@ func ComputeTraced(c *fiber.Ctx) error {
 		requestID = rid
 	}
 
-	// Log incoming headers so we can verify header propagation from chamod
-	log.Printf("%v: ComputeTraced - start; headers: newrelic=%s traceparent=%s tracestate=%s X-Request-Id=%s",
-		requestID, c.Get("newrelic"), c.Get("traceparent"), c.Get("tracestate"), c.Get("X-Request-Id"))
-
 	// Get New Relic transaction from context
 	txn := newrelic.FromContext(c.UserContext())
 	if txn == nil {
 		log.Printf("%v: no New Relic transaction found; this request will be recorded locally only", requestID)
 		return ComputeUntraced(c)
 	} else {
+		c.Locals("newRelicTransaction", txn)
 		traceMetadata := txn.GetTraceMetadata()
 		traceID := traceMetadata.TraceID
 		spanID := traceMetadata.SpanID
 		sampled := txn.IsSampled()
 		utils.Logger.Debug(requestID, "Request TraceID: %s, SpanID: %s, Sampled: %v", traceID, spanID, sampled)
 	}
+
+	// Log incoming headers so we can verify header propagation from chamod
+	log.Printf("%v: ComputeTraced - start; headers: newrelic=%s traceparent=%s tracestate=%s X-Request-Id=%s",
+		requestID, c.Get("newrelic"), c.Get("traceparent"), c.Get("tracestate"), c.Get("X-Request-Id"))
 
 	//log.Printf("Incoming headers: newrelic=%s traceparent=%s tracestate=%s",
 	//	c.Get("newrelic"), c.Get("traceparent"), c.Get("tracestate"))
@@ -88,7 +89,7 @@ func ComputeTraced(c *fiber.Ctx) error {
 	// Simulate 2-3s processing
 	r := time.Duration(2000+rand.Intn(1000)) * time.Millisecond
 	time.Sleep(r)
-	defer internalSeg.End()
+
 	internalDuration := time.Since(internalStart)
 
 	// Prepare external request with the same context so the agent can inject tracing headers
@@ -98,6 +99,15 @@ func ComputeTraced(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "error": err.Error()})
 	}
 
+	// Inject distributed tracing headers if new relic is enabled
+	if txn := GetNewRelicTxn(c); txn != nil {
+		txn.InsertDistributedTraceHeaders(req.Header)
+	} else {
+		utils.Logger.Info(requestID, "NR is disabled, not injecting DT headers")
+	}
+
+	txn.AcceptDistributedTraceHeaders(newrelic.TransportHTTP, req.Header)
+	defer internalSeg.End()
 	// Start an external segment. This will cause the New Relic agent to add distributed
 	// tracing headers to the outbound request (so the called service could link traces).
 	externalSeg := newrelic.StartExternalSegment(txn, req)
@@ -125,4 +135,12 @@ func ComputeTraced(c *fiber.Ctx) error {
 		"internal_duration": r.Milliseconds(),
 		"external_duration": externalDuration.Milliseconds(),
 	})
+}
+
+func GetNewRelicTxn(ctx *fiber.Ctx) *newrelic.Transaction {
+	txnVal := ctx.Locals("newRelicTransaction")
+	if txn, ok := txnVal.(*newrelic.Transaction); ok {
+		return txn
+	}
+	return nil
 }

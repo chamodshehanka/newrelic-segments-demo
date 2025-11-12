@@ -33,6 +33,13 @@ func UntracedHandler(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "error": err.Error()})
 	}
 
+	// Inject distributed tracing headers if new relic is enabled
+	if txn := GetNewRelicTxn(c); txn != nil {
+		txn.InsertDistributedTraceHeaders(req.Header)
+	} else {
+		utils.Logger.Info(requestID, "NR is disabled, not injecting DT headers")
+	}
+
 	// Forward X-Request-Id if present
 	if requestID != "" {
 		req.Header.Set("X-Request-Id", requestID)
@@ -72,6 +79,7 @@ func TracedHandler(c *fiber.Ctx) error {
 		utils.Logger.Warn(requestID, "no new relic transaction found, falling back to untraced handler")
 		return UntracedHandler(c)
 	} else {
+		c.Locals("newRelicTransaction", txn)
 		traceMetadata := txn.GetTraceMetadata()
 		traceID := traceMetadata.TraceID
 		spanID := traceMetadata.SpanID
@@ -85,7 +93,7 @@ func TracedHandler(c *fiber.Ctx) error {
 	// Simulate 100-300ms internal processing
 	r := time.Duration(100+rand.Intn(200)) * time.Millisecond
 	time.Sleep(r)
-	defer internalSeg.End()
+
 	internalDuration := time.Since(internalStart)
 
 	// Prepare an outbound request to nisansala traced endpoint. Using the transaction
@@ -98,12 +106,20 @@ func TracedHandler(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "error": err.Error()})
 	}
 
+	// Inject distributed tracing headers if new relic is enabled
+	if txn := GetNewRelicTxn(c); txn != nil {
+		txn.InsertDistributedTraceHeaders(req.Header)
+	} else {
+		utils.Logger.Info(requestID, "NR is disabled, not injecting DT headers")
+	}
+
 	// Forward X-Request-Id for easier correlation in logs
 	if requestID != "" {
 		req.Header.Set("X-Request-Id", requestID)
 	}
 
 	// Start external segment which wraps the HTTP call and injects distributed tracing headers
+	defer internalSeg.End()
 	externalSeg := newrelic.StartExternalSegment(txn, req)
 	// Log outbound url and headers so you can confirm the agent injected DT headers
 	utils.Logger.Info(requestID, "Traced outbound request url=%s headers=%v", req.URL.String(), req.Header)
@@ -111,8 +127,10 @@ func TracedHandler(c *fiber.Ctx) error {
 	//	c.Get("newrelic"), c.Get("traceparent"), c.Get("tracestate"))
 	utils.Logger.Debug(requestID, "Incoming request headers: %v", c.GetReqHeaders())
 	utils.Logger.Debug(requestID, "Outgoing request headers: %v", req.Header)
+
+	client := http.Client{Transport: newrelic.NewRoundTripper(http.DefaultTransport)}
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if externalSeg != nil {
 		defer externalSeg.End()
 	}
@@ -135,4 +153,12 @@ func TracedHandler(c *fiber.Ctx) error {
 		"internal_duration":   r.Milliseconds(),
 		"downstream_duration": downstreamDuration.Milliseconds(),
 	})
+}
+
+func GetNewRelicTxn(ctx *fiber.Ctx) *newrelic.Transaction {
+	txnVal := ctx.Locals("newRelicTransaction")
+	if txn, ok := txnVal.(*newrelic.Transaction); ok {
+		return txn
+	}
+	return nil
 }
